@@ -1,0 +1,147 @@
+services:
+  database:
+    container_name: postgresdb
+    image: postgres:17
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+    env_file:
+      - .env
+    healthcheck:
+      test: "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - "5432:5432"
+    networks:
+      - postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data/
+    restart: unless-stopped
+  pgadmin:
+    container_name: pgadmin
+    image: dpage/pgadmin4
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:-admin@admin.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: ${PGADMIN_CONFIG_SERVER_MODE:-"False"}
+    env_file:
+      - .env
+
+    ports:
+      - "${PGADMIN_PORT:-5050}:80"
+    networks:
+      - postgres
+    volumes:
+      - pgadmin:/var/lib/pgadmin
+    restart: unless-stopped
+
+  rabbitmq:
+    container_name: "rabbitmq"
+    image: rabbitmq:4-management
+    environment:
+      - RABBITMQ_DEFAULT_USER=${CELERY_BROKER_USER:-guest}
+      - RABBITMQ_DEFAULT_PASS=${CELERY_BROKER_PASSWORD:-guest}
+    env_file:
+      - .env
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    ports:
+      - 5672:5672
+      - 15672:15672
+    networks:
+      - web
+
+  migration:
+    container_name: "migrations"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: alembic upgrade head
+    env_file:
+      - .env
+    networks:
+      - postgres
+    depends_on:
+      database:
+        condition: service_healthy
+
+  worker:
+    container_name: "celery"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A app.config_celery worker --loglevel=INFO
+    env_file:
+      - .env
+    networks:
+      - web
+      - postgres
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
+  backend:
+    container_name: "fastapi"
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: fastapi dev --host 0.0.0.0 app/main.py
+    env_file:
+      - .env
+    environment:
+      - DOMAIN=${DOMAIN}
+      - ENVIRONMENT=${ENVIRONMENT}
+      - BACKEND_CORS_ORIGINS=${BACKEND_CORS_ORIGINS}
+      - SECRET_KEY=${SECRET_KEY}
+      - APP_NAME=${APP_NAME}
+      - LOG_LEVEL=${LOG_LEVEL}
+      - LOG_FILE=${LOG_FILE}
+      - USER_CREATION_URL=${USER_CREATION_URL}
+      - USER_FORGOT_PASSWORD_URL=${USER_FORGOT_PASSWORD_URL}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASSWORD=${SMTP_PASSWORD}
+      - EMAILS_FROM_EMAIL=${EMAILS_FROM_EMAIL}
+      - EMAILS_FROM_NAME=${EMAILS_FROM_NAME}
+      - SMTP_TLS=${SMTP_TLS}
+      - SMTP_SSL=${SMTP_SSL}
+      - SMTP_PORT=${SMTP_PORT}
+      - POSTGRES_SERVER=database # hardcoded to see the postgres container
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - PGADMIN_DEFAULT_EMAIL=${PGADMIN_DEFAULT_EMAIL}
+      - PGADMIN_DEFAULT_PASSWORD=${PGADMIN_DEFAULT_PASSWORD}
+      - PGADMIN_CONFIG_SERVER_MODE=${PGADMIN_CONFIG_SERVER_MODE}
+      - CELERY_BROKER_SERVER=${CELERY_BROKER_SERVER}
+      - CELERY_BROKER_USER=${CELERY_BROKER_USER}
+      - CELERY_BROKER_PASSWORD=${CELERY_BROKER_PASSWORD}
+      - CELERY_BROKER_PORT=${CELERY_BROKER_PORT}
+      - CELERY_BROKER_VHOST=${CELERY_BROKER_VHOST}
+    ports:
+      - "8000:8000"
+    networks:
+      - web
+      - postgres
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+networks:
+  postgres:
+    driver: bridge
+  web:
+    driver: bridge
+
+volumes:
+  pgdata:
+  pgadmin:
